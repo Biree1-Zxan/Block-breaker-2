@@ -1,6 +1,13 @@
 const canvas = document.getElementById("game");
 const ctx = canvas.getContext("2d");
 
+// ---------- Constants ----------
+const DEFAULT_PADDLE_W = 110;
+const WIDE_PADDLE_W = 170;
+
+const DEFAULT_BALL_SPEED = 5;
+const SLOW_BALL_SPEED = 3.5;
+
 // ---------- Game state ----------
 const state = {
   score: 0,
@@ -12,23 +19,16 @@ const state = {
 
 // Paddle
 const paddle = {
-  w: 110,
+  w: DEFAULT_PADDLE_W,
   h: 14,
-  x: (canvas.width - 110) / 2,
+  x: (canvas.width - DEFAULT_PADDLE_W) / 2,
   y: canvas.height - 30,
   speed: 7,
   dx: 0,
 };
 
-// Ball
-const ball = {
-  r: 7,
-  x: canvas.width / 2,
-  y: paddle.y - 7 - 1,
-  vx: 0,
-  vy: 0,
-  speed: 5,
-};
+// Balls (MULTIBALL: we store multiple balls here)
+const balls = [];
 
 // Bricks
 const bricks = {
@@ -42,22 +42,68 @@ const bricks = {
   grid: [],
 };
 
+// ---------- Power-ups ----------
+const powerUps = []; // falling items
+const POWERUP_TYPES = ["WIDE", "SLOW", "LIFE", "MULTI"];
+
+const powerupState = {
+  wideUntil: 0,
+  slowUntil: 0,
+};
+
+function spawnPowerUp(x, y) {
+  if (Math.random() > 0.25) return; // 25% chance
+  const type = POWERUP_TYPES[Math.floor(Math.random() * POWERUP_TYPES.length)];
+  powerUps.push({ type, x, y, r: 10, vy: 2.4, alive: true });
+}
+
+// ---------- Setup / Reset ----------
+function makeBall() {
+  return {
+    r: 7,
+    x: canvas.width / 2,
+    y: paddle.y - 7 - 1,
+    vx: 0,
+    vy: 0,
+    speed: DEFAULT_BALL_SPEED,
+    alive: true,
+  };
+}
+
+function resetBallsToOne() {
+  balls.length = 0;
+  balls.push(makeBall());
+}
+
+function resetBallOnPaddle() {
+  // Only the first ball sits on the paddle before launch
+  const b = balls[0];
+  b.x = paddle.x + paddle.w / 2;
+  b.y = paddle.y - b.r - 1;
+  b.vx = 0;
+  b.vy = 0;
+  b.speed = DEFAULT_BALL_SPEED;
+  state.started = false;
+}
+
+function clearPowerUpsAndEffects() {
+  powerUps.length = 0;
+  powerupState.wideUntil = 0;
+  powerupState.slowUntil = 0;
+
+  paddle.w = DEFAULT_PADDLE_W;
+  paddle.x = clamp(paddle.x, 0, canvas.width - paddle.w);
+
+  // Restore ball speeds (all balls)
+  for (const b of balls) setBallSpeedForBall(b, DEFAULT_BALL_SPEED);
+}
+
 function resetBricks() {
   bricks.grid = [];
   for (let r = 0; r < bricks.rows; r++) {
     bricks.grid[r] = [];
-    for (let c = 0; c < bricks.cols; c++) {
-      bricks.grid[r][c] = { alive: true };
-    }
+    for (let c = 0; c < bricks.cols; c++) bricks.grid[r][c] = { alive: true };
   }
-}
-
-function resetBallOnPaddle() {
-  ball.x = paddle.x + paddle.w / 2;
-  ball.y = paddle.y - ball.r - 1;
-  ball.vx = 0;
-  ball.vy = 0;
-  state.started = false;
 }
 
 function fullReset() {
@@ -66,13 +112,19 @@ function fullReset() {
   state.paused = false;
   state.started = false;
   state.gameOver = false;
+
+  paddle.w = DEFAULT_PADDLE_W;
   paddle.x = (canvas.width - paddle.w) / 2;
   paddle.dx = 0;
+
   resetBricks();
+  resetBallsToOne();
+  clearPowerUpsAndEffects();
   resetBallOnPaddle();
 }
 
 resetBricks();
+resetBallsToOne();
 resetBallOnPaddle();
 
 // ---------- Input ----------
@@ -84,7 +136,7 @@ window.addEventListener("keydown", (e) => {
 
   if (k === " " || e.code === "Space") {
     if (state.gameOver) return;
-    if (!state.started) launchBall();
+    if (!state.started) launchBalls();
     else state.paused = !state.paused;
     e.preventDefault();
   }
@@ -92,16 +144,18 @@ window.addEventListener("keydown", (e) => {
   if (k === "r") fullReset();
 });
 
-window.addEventListener("keyup", (e) => {
-  keys.delete(e.key.toLowerCase());
-});
+window.addEventListener("keyup", (e) => keys.delete(e.key.toLowerCase()));
 
-function launchBall() {
+function launchBalls() {
   state.started = true;
-  // Random-ish angle upward
-  const angle = (Math.random() * 0.9 + 0.15) * Math.PI; // ~[0.15π, 1.05π]
-  ball.vx = Math.cos(angle) * ball.speed;
-  ball.vy = -Math.abs(Math.sin(angle) * ball.speed);
+
+  // Launch the first ball if it's not moving
+  const b = balls[0];
+  if (Math.hypot(b.vx, b.vy) < 1e-6) {
+    const angle = (Math.random() * 0.9 + 0.15) * Math.PI;
+    b.vx = Math.cos(angle) * b.speed;
+    b.vy = -Math.abs(Math.sin(angle) * b.speed);
+  }
 }
 
 // ---------- Helpers ----------
@@ -114,17 +168,66 @@ function circleRectCollision(cx, cy, r, rx, ry, rw, rh) {
   const closestY = clamp(cy, ry, ry + rh);
   const dx = cx - closestX;
   const dy = cy - closestY;
-  return (dx * dx + dy * dy) <= r * r;
+  return dx * dx + dy * dy <= r * r;
 }
 
 function remainingBricks() {
   let count = 0;
   for (let r = 0; r < bricks.rows; r++) {
-    for (let c = 0; c < bricks.cols; c++) {
-      if (bricks.grid[r][c].alive) count++;
-    }
+    for (let c = 0; c < bricks.cols; c++) if (bricks.grid[r][c].alive) count++;
   }
   return count;
+}
+
+function setBallSpeedForBall(b, newSpeed) {
+  const mag = Math.hypot(b.vx, b.vy);
+  if (mag < 1e-6) {
+    b.speed = newSpeed;
+    return;
+  }
+  const scale = newSpeed / mag;
+  b.vx *= scale;
+  b.vy *= scale;
+  b.speed = newSpeed;
+}
+
+function applyPowerUp(type) {
+  const now = Date.now();
+
+  if (type === "WIDE") {
+    paddle.w = WIDE_PADDLE_W;
+    paddle.x = clamp(paddle.x, 0, canvas.width - paddle.w);
+    powerupState.wideUntil = now + 9000;
+  } else if (type === "SLOW") {
+    for (const b of balls) setBallSpeedForBall(b, SLOW_BALL_SPEED);
+    powerupState.slowUntil = now + 7000;
+  } else if (type === "LIFE") {
+    state.lives = Math.min(state.lives + 1, 9);
+  } else if (type === "MULTI") {
+    // Duplicate 2 extra balls based on an existing ball (use first ball as reference)
+    const ref = balls[0];
+    if (!ref) return;
+
+    for (let i = 0; i < 2; i++) {
+      const nb = makeBall();
+      nb.x = ref.x;
+      nb.y = ref.y;
+      nb.speed = ref.speed;
+
+      // Slightly different angles so they spread out
+      const baseAngle = Math.atan2(ref.vy, ref.vx);
+      const offset = (i === 0 ? -0.35 : 0.35); // radians
+      const angle = baseAngle + offset;
+
+      nb.vx = Math.cos(angle) * nb.speed;
+      nb.vy = Math.sin(angle) * nb.speed;
+
+      // Ensure they go upward-ish if reference is weird
+      if (nb.vy > 0) nb.vy *= -1;
+
+      balls.push(nb);
+    }
+  }
 }
 
 // ---------- Update ----------
@@ -137,83 +240,135 @@ function update() {
   paddle.x += paddle.dx * paddle.speed;
   paddle.x = clamp(paddle.x, 0, canvas.width - paddle.w);
 
-  // If ball not launched, keep it on paddle
+  // If not started, keep 1 ball on paddle
   if (!state.started) {
     resetBallOnPaddle();
     return;
   }
 
-  // Ball movement
-  ball.x += ball.vx;
-  ball.y += ball.vy;
+  // Move balls + collisions
+  for (const b of balls) {
+    if (!b.alive) continue;
 
-  // Wall collisions
-  if (ball.x - ball.r <= 0) {
-    ball.x = ball.r;
-    ball.vx *= -1;
-  }
-  if (ball.x + ball.r >= canvas.width) {
-    ball.x = canvas.width - ball.r;
-    ball.vx *= -1;
-  }
-  if (ball.y - ball.r <= 0) {
-    ball.y = ball.r;
-    ball.vy *= -1;
+    b.x += b.vx;
+    b.y += b.vy;
+
+    // Walls
+    if (b.x - b.r <= 0) {
+      b.x = b.r;
+      b.vx *= -1;
+    }
+    if (b.x + b.r >= canvas.width) {
+      b.x = canvas.width - b.r;
+      b.vx *= -1;
+    }
+    if (b.y - b.r <= 0) {
+      b.y = b.r;
+      b.vy *= -1;
+    }
+
+    // Bottom => this ball dies
+    if (b.y - b.r > canvas.height) {
+      b.alive = false;
+      continue;
+    }
+
+    // Paddle collision
+    if (
+      b.vy > 0 &&
+      circleRectCollision(b.x, b.y, b.r, paddle.x, paddle.y, paddle.w, paddle.h)
+    ) {
+      b.y = paddle.y - b.r - 1;
+      b.vy = -Math.abs(b.vy);
+
+      const hitPos = (b.x - (paddle.x + paddle.w / 2)) / (paddle.w / 2); // [-1..1]
+      b.vx = hitPos * b.speed * 1.1;
+
+      const maxVX = b.speed * 1.4;
+      b.vx = clamp(b.vx, -maxVX, maxVX);
+    }
+
+    // Brick collision (only 1 brick hit per ball per frame)
+    let hitBrickThisBall = false;
+
+    for (let r = 0; r < bricks.rows && !hitBrickThisBall; r++) {
+      for (let c = 0; c < bricks.cols && !hitBrickThisBall; c++) {
+        const brick = bricks.grid[r][c];
+        if (!brick.alive) continue;
+
+        const bx = bricks.left + c * (bricks.w + bricks.pad);
+        const by = bricks.top + r * (bricks.h + bricks.pad);
+
+        if (circleRectCollision(b.x, b.y, b.r, bx, by, bricks.w, bricks.h)) {
+          brick.alive = false;
+          state.score += 10;
+
+          spawnPowerUp(bx + bricks.w / 2, by + bricks.h / 2);
+
+          b.vy *= -1;
+          hitBrickThisBall = true;
+        }
+      }
+    }
   }
 
-  // Bottom: lose life
-  if (ball.y - ball.r > canvas.height) {
+  // Remove dead balls
+  for (let i = balls.length - 1; i >= 0; i--) {
+    if (!balls[i].alive) balls.splice(i, 1);
+  }
+
+  // If all balls are gone, lose a life
+  if (balls.length === 0) {
     state.lives--;
     if (state.lives <= 0) {
       state.gameOver = true;
       state.paused = true;
       return;
     }
+
+    // Reset to one ball + clear effects
+    resetBallsToOne();
+    clearPowerUpsAndEffects();
     resetBallOnPaddle();
     return;
   }
 
-  // Paddle collision (only when moving downward)
-  if (
-    ball.vy > 0 &&
-    circleRectCollision(ball.x, ball.y, ball.r, paddle.x, paddle.y, paddle.w, paddle.h)
-  ) {
-    // Bounce up
-    ball.y = paddle.y - ball.r - 1;
-    ball.vy = -Math.abs(ball.vy);
-
-    // Add "spin" based on where it hits the paddle
-    const hitPos = (ball.x - (paddle.x + paddle.w / 2)) / (paddle.w / 2); // [-1..1]
-    ball.vx = hitPos * ball.speed * 1.1;
-    // Keep speed reasonable
-    const maxVX = ball.speed * 1.4;
-    ball.vx = clamp(ball.vx, -maxVX, maxVX);
+  // Win check
+  if (remainingBricks() === 0) {
+    state.gameOver = true;
+    state.paused = true;
   }
 
-  // Brick collisions
-  for (let r = 0; r < bricks.rows; r++) {
-    for (let c = 0; c < bricks.cols; c++) {
-      const b = bricks.grid[r][c];
-      if (!b.alive) continue;
+  // Power-ups falling + pickup
+  for (const p of powerUps) {
+    if (!p.alive) continue;
+    p.y += p.vy;
 
-      const bx = bricks.left + c * (bricks.w + bricks.pad);
-      const by = bricks.top + r * (bricks.h + bricks.pad);
-
-      if (circleRectCollision(ball.x, ball.y, ball.r, bx, by, bricks.w, bricks.h)) {
-        b.alive = false;
-        state.score += 10;
-
-        // Simple bounce: reverse Y (good enough for a starter game)
-        ball.vy *= -1;
-
-        // Win check
-        if (remainingBricks() === 0) {
-          state.gameOver = true;
-          state.paused = true;
-        }
-        return; // avoid multi-hit in one frame
-      }
+    if (circleRectCollision(p.x, p.y, p.r, paddle.x, paddle.y, paddle.w, paddle.h)) {
+      p.alive = false;
+      applyPowerUp(p.type);
     }
+
+    if (p.y - p.r > canvas.height) p.alive = false;
+  }
+
+  // Remove dead power-ups
+  for (let i = powerUps.length - 1; i >= 0; i--) {
+    if (!powerUps[i].alive) powerUps.splice(i, 1);
+  }
+
+  // Expire timed effects
+  const now = Date.now();
+
+  if (powerupState.wideUntil && now > powerupState.wideUntil) {
+    paddle.w = DEFAULT_PADDLE_W;
+    paddle.x = clamp(paddle.x, 0, canvas.width - paddle.w);
+    powerupState.wideUntil = 0;
+  }
+
+  if (powerupState.slowUntil && now > powerupState.slowUntil) {
+    for (const b of balls) setBallSpeedForBall(b, DEFAULT_BALL_SPEED);
+    powerupState.slowUntil = 0;
   }
 }
 
@@ -230,22 +385,45 @@ function draw() {
       const x = bricks.left + c * (bricks.w + bricks.pad);
       const y = bricks.top + r * (bricks.h + bricks.pad);
 
-      // Color based on row
       const shade = 210 + r * 5;
       ctx.fillStyle = `hsl(${shade}, 70%, 55%)`;
       roundRect(x, y, bricks.w, bricks.h, 6, true);
     }
   }
 
+  // Power-ups
+  for (const p of powerUps) {
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
+
+    if (p.type === "WIDE") ctx.fillStyle = "#5cf2a6";
+    else if (p.type === "SLOW") ctx.fillStyle = "#5cc7ff";
+    else if (p.type === "LIFE") ctx.fillStyle = "#ff6b6b";
+    else if (p.type === "MULTI") ctx.fillStyle = "#ffd166";
+    else ctx.fillStyle = "#ffffff";
+
+    ctx.fill();
+
+    ctx.fillStyle = "#071024";
+    ctx.font = "700 12px system-ui, Arial";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText(p.type[0], p.x, p.y); // W / S / L / M
+  }
+  ctx.textAlign = "start";
+  ctx.textBaseline = "alphabetic";
+
   // Paddle
   ctx.fillStyle = "#dbe7ff";
   roundRect(paddle.x, paddle.y, paddle.w, paddle.h, 8, true);
 
-  // Ball
-  ctx.beginPath();
-  ctx.arc(ball.x, ball.y, ball.r, 0, Math.PI * 2);
-  ctx.fillStyle = "#ffffff";
-  ctx.fill();
+  // Balls
+  for (const b of balls) {
+    ctx.beginPath();
+    ctx.arc(b.x, b.y, b.r, 0, Math.PI * 2);
+    ctx.fillStyle = "#ffffff";
+    ctx.fill();
+  }
 
   // HUD
   ctx.fillStyle = "rgba(219,231,255,0.9)";
@@ -254,12 +432,8 @@ function draw() {
   ctx.fillText(`Lives: ${state.lives}`, canvas.width - 80, 24);
 
   // Overlay text
-  if (!state.started && !state.gameOver) {
-    centerText("Press SPACE to launch", canvas.height * 0.55);
-  }
-  if (state.paused && state.started && !state.gameOver) {
-    centerText("Paused (SPACE to resume)", canvas.height * 0.55);
-  }
+  if (!state.started && !state.gameOver) centerText("Press SPACE to launch", canvas.height * 0.55);
+  if (state.paused && state.started && !state.gameOver) centerText("Paused (SPACE to resume)", canvas.height * 0.55);
   if (state.gameOver) {
     const msg = remainingBricks() === 0 ? "You Win!" : "Game Over";
     centerText(`${msg}  (R to restart)`, canvas.height * 0.55);
@@ -275,7 +449,6 @@ function centerText(text, y) {
   ctx.restore();
 }
 
-// Rounded rectangle helper
 function roundRect(x, y, w, h, r, fill) {
   const radius = Math.min(r, w / 2, h / 2);
   ctx.beginPath();
@@ -295,3 +468,6 @@ function loop() {
   requestAnimationFrame(loop);
 }
 loop();
+
+ctx.fillText("Made by Brian / Bzxanh", 12, canvas.height - 12);
+ctx.save(); ctx.globalAlpha = 0.7; ctx.font = "12px system-ui, Arial"; ctx.fillStyle = "#dbe7ff"; ctx.fillText("Made by Brian / Bzxanh", 12, canvas.height - 12); ctx.restore();
