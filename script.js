@@ -469,5 +469,5 @@ function loop() {
 }
 loop();
 
-ctx.fillText("Made by Brian / Bzxanh", 12, canvas.height - 12);
+ctx.fillText("Made by Brian v2", 12, canvas.height - 12);
 ctx.save(); ctx.globalAlpha = 0.7; ctx.font = "12px system-ui, Arial"; ctx.fillStyle = "#dbe7ff"; ctx.fillText("Made by Brian / Bzxanh", 12, canvas.height - 12); ctx.restore();
